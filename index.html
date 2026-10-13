@@ -1,0 +1,762 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brick Snake</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;600&family=Space+Grotesk:wght@700&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: radial-gradient(ellipse at 50% 110%, #7a2fd0 0%, #37136a 30%, #170830 60%, #0b0420 100%);
+    color: #fff8ff;
+    font-family: "Lexend", "Helvetica Neue", Arial, sans-serif;
+  }
+  .wrap { width: min(100%, 588px); }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 14px;
+  }
+  h1 {
+    margin: 0;
+    font-family: "Space Grotesk", "Arial Black", "Helvetica Neue", Arial, sans-serif;
+    font-size: 22px;
+    font-weight: 900;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  /* Orb Score sphere; --c is the score band colour, set from JS */
+  .score {
+    --c: #f03a48;
+    position: relative;
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 96px;
+    height: 96px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 50% 42%,
+      color-mix(in srgb, var(--c), #fff 8%) 0%,
+      color-mix(in srgb, var(--c) 72%, #0d041e) 55%,
+      color-mix(in srgb, var(--c) 30%, #0d041e) 86%,
+      #191725 100%);
+    box-shadow: inset 0 0 12px rgba(13, 4, 30, 0.6), 0 0 0 2px #3a2554, 0 0 0 3px rgba(181, 144, 255, 0.25), 0 10px 24px rgba(0, 0, 0, 0.5);
+    color: #fff;
+    font-family: "Space Grotesk", "Arial Black", "Helvetica Neue", Arial, sans-serif;
+    font-size: 32px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    text-shadow: 1.5px 0 #1e0f33, -1.5px 0 #1e0f33, 0 1.5px #1e0f33, 0 -1.5px #1e0f33,
+      1px 1px #1e0f33, -1px -1px #1e0f33, 1px -1px #1e0f33, -1px 1px #1e0f33;
+  }
+  /* glass glints */
+  .score::before, .score::after {
+    content: "";
+    position: absolute;
+    inset: 5px;
+    border: 3px solid transparent;
+    border-radius: 50%;
+  }
+  .score::before { border-top-color: rgba(255, 255, 255, 0.35); transform: rotate(40deg); }
+  .score::after { border-bottom-color: rgba(255, 255, 255, 0.12); transform: rotate(30deg); }
+  /* stepped keyframes so the badge "clicks" like a stop-motion pose change */
+  .score.bump { animation: bump 270ms steps(1, end); }
+  @keyframes bump {
+    0%   { transform: translateY(-5px) rotate(-3deg); }
+    33%  { transform: translateY(1px) rotate(1.5deg); }
+    66%  { transform: none; }
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 10px;
+    box-shadow: 0 0 0 1px #37136a, 0 24px 60px rgba(0, 0, 0, 0.55);
+  }
+  .help {
+    margin-top: 14px;
+    color: #b590ff;
+    font-size: 13px;
+    text-align: center;
+  }
+  kbd {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: #230b49;
+    color: #fff8ff;
+    font: 600 12px "Lexend", "Helvetica Neue", Arial, sans-serif;
+    box-shadow: 0 2px 0 #0b0420;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Brick Snake</h1>
+    <div class="score" id="badge" aria-label="Orb Score"><span id="score">0</span></div>
+  </header>
+  <canvas id="board" aria-label="Snake game board"></canvas>
+  <p class="help"><kbd>Arrows</kbd> or <kbd>WASD</kbd> to steer &middot; <kbd>Space</kbd> / <kbd>Enter</kbd> to rebuild &middot; <kbd>M</kbd> to mute</p>
+</div>
+
+<script>
+const N = 20;
+const CELL = 28;
+const PAD = 14;
+const SIZE = N * CELL + PAD * 2;
+const FPS = 15;
+const FRAME_MS = 1000 / FPS;
+const H = 4; // visible side height of a brick, in px
+const DROP_MS = 150;
+const REMOVE_MS = 300;
+const DEATH_MS = 1200;
+const TILE_DELAY = 220;
+const TILE_REST = 3; // px a printed tile sits above the plate, on top of its brick
+const WIN_SCORE = 100;
+// Orb Score gain per tier: [points per step, bytes per step, until score reaches].
+// Quick to 70, then each point costs more bytes.
+const SCORE_TIERS = [
+  [10, 1, 10],
+  [5, 1, 70],
+  [2, 1, 80],
+  [1, 1, 90],
+  [1, 3, 100],
+];
+const GRAVITY = 1400; // px/s^2 for knocked-loose pieces
+
+const HEAD = '#9c62e9';
+const BYTE = '#7a2fd0';
+const TILE = '#fff8ff';
+const BIN = ['#51b456', '#fcbf49', '#f67d48', '#19caa4', '#44b9d0'];
+
+const UP = { x: 0, y: -1 }, DOWN = { x: 0, y: 1 }, LEFT = { x: -1, y: 0 }, RIGHT = { x: 1, y: 0 };
+const KEYS = {
+  arrowup: UP, w: UP,
+  arrowdown: DOWN, s: DOWN,
+  arrowleft: LEFT, a: LEFT,
+  arrowright: RIGHT, d: RIGHT,
+};
+
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+const dpr = Math.min(window.devicePixelRatio || 1, 2);
+canvas.width = SIZE * dpr;
+canvas.height = SIZE * dpr;
+
+const scoreEl = document.getElementById('score');
+const badge = document.getElementById('badge');
+
+let state, snake, dir, queue, food, score, bytes, won, lastTick, deathT, lastColor;
+let debris = [];
+let idc = 1;
+
+// Deterministic per-frame noise, so a held frame keeps the same "boil".
+function rand(a, b) {
+  let h = Math.imul(a | 0, 374761393) ^ Math.imul(b | 0, 668265263);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const clamp01 = v => clamp(v, 0, 1);
+
+const shadeCache = new Map();
+function shade(hex, amt) {
+  const key = hex + amt;
+  let v = shadeCache.get(key);
+  if (!v) {
+    const n = parseInt(hex.slice(1), 16);
+    const t = amt < 0 ? 0 : 255, p = Math.abs(amt);
+    const mix = c => Math.round(c + (t - c) * p);
+    v = `rgb(${mix(n >> 16)},${mix((n >> 8) & 255)},${mix(n & 255)})`;
+    shadeCache.set(key, v);
+  }
+  return v;
+}
+
+function nextColor() {
+  let c;
+  do c = BIN[Math.floor(Math.random() * BIN.length)]; while (c === lastColor);
+  return (lastColor = c);
+}
+
+const tickMs = () => Math.max(85, 150 - bytes * 2.5);
+
+function dropLift(age) {
+  if (age >= DROP_MS) return 0;
+  const k = 1 - age / DROP_MS;
+  return 28 * k * k;
+}
+
+// ---------- baseplate ----------
+
+const plate = document.createElement('canvas');
+(function buildPlate() {
+  plate.width = SIZE * dpr;
+  plate.height = SIZE * dpr;
+  const c = plate.getContext('2d');
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  c.fillStyle = '#170830';
+  c.fillRect(0, 0, SIZE, SIZE);
+  c.fillStyle = '#230b49';
+  c.fillRect(PAD - 2, PAD - 2, N * CELL + 4, N * CELL + 4);
+  const g = c.createLinearGradient(0, 0, SIZE, SIZE);
+  g.addColorStop(0, 'rgba(255,255,255,0.08)');
+  g.addColorStop(1, 'rgba(0,0,0,0.14)');
+  c.fillStyle = g;
+  c.fillRect(0, 0, SIZE, SIZE);
+  c.strokeStyle = 'rgba(0,0,0,0.3)';
+  c.lineWidth = 2;
+  c.strokeRect(PAD - 3, PAD - 3, N * CELL + 6, N * CELL + 6);
+
+  const r = CELL * 0.27;
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const cx = PAD + (x + 0.5) * CELL, cy = PAD + (y + 0.5) * CELL;
+      c.fillStyle = 'rgba(0,0,0,0.22)';
+      c.beginPath(); c.arc(cx + 1, cy + 1.6, r, 0, Math.PI * 2); c.fill();
+      c.fillStyle = '#2e1160';
+      c.beginPath(); c.arc(cx, cy, r, 0, Math.PI * 2); c.fill();
+      c.strokeStyle = 'rgba(181,144,255,0.25)';
+      c.lineWidth = 1.2;
+      c.beginPath(); c.arc(cx, cy, r - 1.5, Math.PI * 1.05, Math.PI * 1.55); c.stroke();
+    }
+  }
+})();
+
+const vignette = ctx.createRadialGradient(SIZE / 2, SIZE / 2, SIZE * 0.3, SIZE / 2, SIZE / 2, SIZE * 0.78);
+vignette.addColorStop(0, 'rgba(0,0,0,0)');
+vignette.addColorStop(1, 'rgba(0,0,0,0.38)');
+
+// ---------- pieces ----------
+
+function shapePath(kind, s, dy) {
+  ctx.beginPath();
+  if (kind === 'brick') ctx.roundRect(-s / 2, -s / 2 + dy, s, s, 3);
+  else if (kind === 'tile') ctx.roundRect(-s * 0.42, -s * 0.42 + dy, s * 0.84, s * 0.84, 2);
+  else ctx.arc(0, dy, s / 2, 0, Math.PI * 2);
+}
+
+function drawStud(s, h, color) {
+  const r = s * 0.27, y = -h / 2;
+  ctx.fillStyle = shade(color, -0.3);
+  ctx.beginPath(); ctx.arc(0, y + 1.5, r, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = shade(color, 0.1);
+  ctx.beginPath(); ctx.arc(0, y - 1, r, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+  ctx.lineWidth = 1.3;
+  ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(0, y - 1, r - 1.8, Math.PI * 1.05, Math.PI * 1.55); ctx.stroke();
+}
+
+// a little packet: four bits printed on a square 1x1 tile, inside a thin border
+function drawBits(s, h, bits) {
+  const k = s * 0.16;
+  ctx.save();
+  ctx.translate(0, -h / 2);
+  ctx.strokeStyle = BYTE;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(-s * 0.37, -s * 0.37, s * 0.74, s * 0.74, 1.5);
+  ctx.stroke();
+  ctx.fillStyle = BYTE;
+  ctx.font = `700 ${s * 0.3}px "Space Grotesk", ui-monospace, Menlo, monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  [...bits].forEach((b, i) => ctx.fillText(b, (i % 2 ? k : -k), (i < 2 ? -k : k) + 0.5));
+  ctx.restore();
+}
+
+function drawFace(s, h, d) {
+  ctx.save();
+  ctx.translate(0, -h / 2);
+  ctx.rotate(Math.atan2(d.y, d.x));
+  for (const side of [-1, 1]) {
+    ctx.fillStyle = '#1b1b1b';
+    ctx.beginPath(); ctx.arc(-s * 0.06, side * s * 0.16, s * 0.075, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(-s * 0.085, side * s * 0.16 - s * 0.025, s * 0.028, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.strokeStyle = '#1b1b1b';
+  ctx.lineWidth = 1.8;
+  ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(-s * 0.04, 0, s * 0.28, -0.75, 0.75); ctx.stroke();
+  ctx.restore();
+}
+
+function drawPiece(p, f) {
+  const seed = p.id * 5 + 7;
+  const lift = p.lift || 0;
+  const rot = (p.rot || 0) + (rand(f, seed + 2) - 0.5) * 0.02;
+  const s = (CELL - 3) * (1 + lift * 0.01);
+  const cx = PAD + (p.x + 0.5) * CELL + (rand(f, seed) - 0.5) * 0.5;
+  const cy = PAD + (p.y + 0.5) * CELL + (rand(f, seed + 1) - 0.5) * 0.5;
+  const h = p.kind === 'tile' ? 2 : H;
+
+  ctx.save();
+  ctx.globalAlpha = p.alpha ?? 1;
+
+  // the higher a piece is held, the further and fainter its shadow
+  ctx.save();
+  ctx.translate(cx + 2 + lift * 0.45, cy + 3 + lift * 0.55);
+  ctx.rotate(rot);
+  ctx.fillStyle = `rgba(0,0,0,${Math.max(0.1, 0.32 - lift * 0.007)})`;
+  shapePath(p.kind, s, 0);
+  ctx.fill();
+  ctx.restore();
+
+  ctx.translate(cx, cy - lift);
+  ctx.rotate(rot);
+  ctx.fillStyle = shade(p.color, -0.4);
+  shapePath(p.kind, s, h / 2);
+  ctx.fill();
+  ctx.fillStyle = p.color;
+  shapePath(p.kind, s, -h / 2);
+  ctx.fill();
+  const g = ctx.createLinearGradient(-s / 2, -s / 2, s / 2, s / 2);
+  g.addColorStop(0, 'rgba(255,255,255,0.3)');
+  g.addColorStop(0.5, 'rgba(255,255,255,0)');
+  g.addColorStop(1, 'rgba(0,0,0,0.12)');
+  ctx.fillStyle = g;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.22)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  if (p.kind === 'head') drawFace(s, h, p.dir);
+  else if (p.kind === 'tile') drawBits(s, h, p.bits);
+  else drawStud(s, h, p.color);
+  ctx.restore();
+}
+
+function foodPieces(fd) {
+  return [
+    { kind: 'brick', id: fd.id, color: BYTE, x: fd.x, y: fd.y },
+    { kind: 'tile', id: fd.id + 1, color: TILE, bits: fd.bits, x: fd.x, y: fd.y, z: fd.y + 0.01, lift: TILE_REST },
+  ];
+}
+
+// ---------- debris: pieces being removed or knocked loose ----------
+
+function liftOff(p, t0) {
+  debris.push({ mode: 'lift', side: Math.random() < 0.5 ? -1 : 1, t0, lift: 0, rot: 0, ...p });
+}
+
+function scatterState(d, ft) {
+  const T = Math.max(0, ft - d.t0) / 1000;
+  const e = (1 - Math.exp(-2.5 * T)) / 2.5;
+  const G = GRAVITY;
+  const t1 = 2 * d.vz / G;
+  let lift = 0;
+  if (T < t1) {
+    lift = d.vz * T - 0.5 * G * T * T;
+  } else {
+    const v2 = d.vz * 0.3, T2 = T - t1;
+    if (T2 < 2 * v2 / G) lift = v2 * T2 - 0.5 * G * T2 * T2;
+  }
+  return {
+    x: clamp(d.x + d.vx * e, -0.3, N - 0.7),
+    y: clamp(d.y + d.vy * e, -0.3, N - 0.7),
+    lift,
+    rot: d.vr * e,
+  };
+}
+
+function debrisPiece(d, ft) {
+  const p = { kind: d.kind, id: d.id, color: d.color, dir: d.dir, bits: d.bits, x: d.x, y: d.y, z: d.z, lift: d.lift, rot: d.rot };
+  if (d.mode === 'scatter') return Object.assign(p, scatterState(d, ft));
+  const age = ft - d.t0;
+  if (age >= 0) {
+    const k = age / REMOVE_MS;
+    p.x += 0.2 * k * d.side;
+    p.y -= 0.15 * k;
+    p.lift += 8 + 26 * k;
+    p.rot += 0.35 * k * d.side;
+    p.alpha = k < 0.6 ? 1 : 1 - (k - 0.6) / 0.4;
+  }
+  return p;
+}
+
+// ---------- sound ----------
+// All synthesized: filtered-noise clicks for studs seating and letting go,
+// plus a few square-wave blips for game events.
+
+let actx = null, master, noise;
+let muted = false;
+
+function initAudio() {
+  if (!actx) {
+    actx = new AudioContext();
+    master = actx.createGain();
+    master.gain.value = 0.6;
+    master.connect(actx.destination);
+    noise = actx.createBuffer(1, actx.sampleRate * 0.1, actx.sampleRate);
+    const d = noise.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  }
+  if (actx.state === 'suspended') actx.resume();
+}
+
+// Land the sound on the frame where the event first shows up, not the exact tick.
+function at(t) {
+  const shown = Math.ceil(t / FRAME_MS) * FRAME_MS;
+  return actx.currentTime + Math.max(0, shown - performance.now()) / 1000;
+}
+
+const live = () => actx && !muted;
+const vary = () => 0.9 + Math.random() * 0.2;
+
+function click(time, freq, gain, decay) {
+  const src = actx.createBufferSource();
+  src.buffer = noise;
+  const bp = actx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = freq;
+  bp.Q.value = 5;
+  const g = actx.createGain();
+  g.gain.setValueAtTime(gain, time);
+  g.gain.exponentialRampToValueAtTime(0.001, time + decay);
+  src.connect(bp).connect(g).connect(master);
+  src.start(time, Math.random() * 0.05);
+  src.stop(time + decay + 0.01);
+}
+
+function tone(time, freq, dur, gain, type = 'triangle', toFreq = freq) {
+  const o = actx.createOscillator();
+  o.type = type;
+  o.frequency.setValueAtTime(freq, time);
+  if (toFreq !== freq) o.frequency.exponentialRampToValueAtTime(toFreq, time + dur);
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0.0001, time);
+  g.gain.exponentialRampToValueAtTime(gain, time + 0.005);
+  g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+  o.connect(g).connect(master);
+  o.start(time);
+  o.stop(time + dur + 0.01);
+}
+
+// studs seating: a sharp click-clack with a little low thump
+function snapSound(t, gain = 1) {
+  if (!live()) return;
+  const time = at(t);
+  click(time, 3400 * vary(), 0.5 * gain, 0.02);
+  click(time + 0.011, 1900 * vary(), 0.35 * gain, 0.03);
+  tone(time, 150 * vary(), 0.05, 0.2 * gain, 'sine', 90);
+}
+
+// pulling off: a dry tick, then a short upward squeak of plastic letting go
+function unsnapSound(t, gain = 1) {
+  if (!live()) return;
+  const time = at(t);
+  click(time, 2400 * vary(), 0.3 * gain, 0.018);
+  click(time + 0.025, 4200 * vary(), 0.15 * gain, 0.012);
+  tone(time + 0.01, 380 * vary(), 0.06, 0.05 * gain, 'triangle', 760);
+}
+
+function eatSound(t) {
+  if (!live()) return;
+  const time = at(t);
+  tone(time, 660, 0.09, 0.08, 'square');
+  tone(time + 0.07, 990, 0.16, 0.07, 'square');
+}
+
+function crashSound(t) {
+  if (!live()) return;
+  const time = at(t);
+  tone(time, 420, 0.5, 0.09, 'square', 90);
+  tone(time, 70, 0.18, 0.35, 'sine', 40);
+}
+
+function winSound(t) {
+  if (!live()) return;
+  const time = at(t);
+  [523, 659, 784, 1047].forEach((f, i) => tone(time + i * 0.1, f, 0.22, 0.08, 'square'));
+}
+
+// ---------- game ----------
+
+// Orb Score bands, as on orb.net
+function orbScore(n) {
+  let score = 0;
+  for (const [pts, per, cap] of SCORE_TIERS) {
+    const steps = Math.min(Math.floor(n / per), (cap - score) / pts);
+    score += steps * pts;
+    n -= steps * per;
+    if (score < cap) break;
+  }
+  return score;
+}
+
+function scoreColor(v) {
+  return v >= 90 ? '#19b05a' : v >= 80 ? '#79b852' : v >= 70 ? '#b9c34c' : v >= 50 ? '#f99e49' : '#f03a48';
+}
+
+function showScore() {
+  scoreEl.textContent = score;
+  badge.style.setProperty('--c', scoreColor(score));
+  badge.classList.remove('bump');
+  void badge.offsetWidth;
+  badge.classList.add('bump');
+}
+
+function spawnFood(t) {
+  const taken = new Set(snake.map(s => s.y * N + s.x));
+  const free = [];
+  for (let i = 0; i < N * N; i++) if (!taken.has(i)) free.push(i);
+  if (!free.length) return null;
+  const i = free[Math.floor(Math.random() * free.length)];
+  const id = idc;
+  idc += 2;
+  snapSound(t + DROP_MS, 0.7);
+  snapSound(t + TILE_DELAY + DROP_MS, 0.4);
+  const bits = Array.from({ length: 4 }, () => (Math.random() < 0.5 ? '0' : '1')).join('');
+  return { x: i % N, y: Math.floor(i / N), t, id, bits };
+}
+
+function reset() {
+  const now = performance.now();
+
+  // pick up the wreckage of the last run one piece at a time
+  debris = debris
+    .filter(d => d.mode === 'scatter')
+    .map(d => {
+      const st = scatterState(d, now);
+      return { mode: 'lift', kind: d.kind, id: d.id, color: d.color, dir: d.dir, x: st.x, y: st.y,
+               lift: st.lift, rot: st.rot, side: Math.random() < 0.5 ? -1 : 1, t0: now + Math.random() * 350 };
+    });
+  if (food) foodPieces(food).forEach(p => liftOff(p, now + Math.random() * 350));
+  debris.slice(0, 20).forEach(d => unsnapSound(d.t0, 0.4));
+
+  score = 0;
+  bytes = 0;
+  won = false;
+  dir = RIGHT;
+  queue = [];
+  showScore();
+
+  // build the starting snake tail-first, head snapped on last
+  const len = 3, start = now + 400;
+  snake = [];
+  for (let i = 0; i < len; i++) {
+    const x = 7 - i, y = 10;
+    const t = start + (len - 1 - i) * 120;
+    snake.push(i === 0
+      ? { x, y, px: x, py: y, id: idc++, t, moveT: -Infinity, hop: 100, dir }
+      : { x, y, id: idc++, color: nextColor(), t });
+    snapSound(t + DROP_MS);
+  }
+  food = spawnFood(start + len * 120 + 150);
+  state = 'ready';
+}
+
+function die(now) {
+  state = 'dying';
+  deathT = now;
+  crashSound(now);
+  const hd = snake[0];
+  snake.forEach((s, i) => {
+    const away = i === 0 ? Math.atan2(-hd.dir.y, -hd.dir.x) : Math.atan2(s.y - hd.y, s.x - hd.x);
+    const a = away + (Math.random() - 0.5) * 1.6;
+    const sp = 1.5 + Math.random() * 4;
+    debris.push({
+      mode: 'scatter',
+      kind: i === 0 ? 'head' : 'brick',
+      id: s.id,
+      color: i === 0 ? HEAD : s.color,
+      dir: s.dir,
+      x: s.x, y: s.y,
+      t0: now + Math.min(i, 30) * 22,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp,
+      vz: 180 + Math.random() * 220,
+      vr: (Math.random() - 0.5) * 10,
+    });
+  });
+  // clatter as the first pieces hit the plate
+  debris.filter(d => d.mode === 'scatter').slice(0, 24)
+    .forEach(d => snapSound(d.t0 + (2 * d.vz / GRAVITY) * 1000, 0.35));
+  snake = [];
+}
+
+function step(now) {
+  if (queue.length) dir = queue.shift();
+  const hd = snake[0];
+  const nx = hd.x + dir.x, ny = hd.y + dir.y;
+  const eating = nx === food.x && ny === food.y;
+  // the tail brick comes off this tick unless we're growing, so moving into it is fine
+  const solid = eating ? snake : snake.slice(0, -1);
+  if (nx < 0 || ny < 0 || nx >= N || ny >= N || solid.some(s => s.x === nx && s.y === ny)) {
+    die(now);
+    return;
+  }
+
+  const hop = Math.min(tickMs() * 0.85, 110);
+  snake[0] = { x: hd.x, y: hd.y, id: idc++, color: nextColor(), t: now + hop * 0.45 };
+  snake.unshift({ x: nx, y: ny, px: hd.x, py: hd.y, id: hd.id, t: hd.t, moveT: now, hop, dir });
+  snapSound(snake[1].t + DROP_MS, 0.8);
+
+  if (eating) {
+    bytes++;
+    score = orbScore(bytes);
+    showScore();
+    foodPieces(food).forEach(p => liftOff(p, now + hop * 0.5));
+    unsnapSound(now + hop * 0.5);
+    eatSound(now + hop * 0.5);
+    food = score >= WIN_SCORE ? null : spawnFood(now + 250);
+    if (!food) {
+      won = true;
+      state = 'over';
+      winSound(now);
+    }
+  } else {
+    const tail = snake.pop();
+    liftOff({ kind: 'brick', id: tail.id, color: tail.color, x: tail.x, y: tail.y }, now);
+    unsnapSound(now, 0.6);
+  }
+}
+
+// ---------- render ----------
+
+function collect(ft) {
+  const out = [];
+  for (let i = 1; i < snake.length; i++) {
+    const b = snake[i];
+    if (ft < b.t) continue;
+    out.push({ kind: 'brick', id: b.id, color: b.color, x: b.x, y: b.y, lift: dropLift(ft - b.t) });
+  }
+  const hd = snake[0];
+  if (hd && ft >= hd.t) {
+    const k = clamp01((ft - hd.moveT) / hd.hop);
+    out.push({
+      kind: 'head', id: hd.id, color: HEAD, dir: hd.dir,
+      x: hd.px + (hd.x - hd.px) * k,
+      y: hd.py + (hd.y - hd.py) * k,
+      lift: Math.max(dropLift(ft - hd.t), Math.sin(k * Math.PI) * 10),
+    });
+  }
+  if (food && ft >= food.t) {
+    const [base, tile] = foodPieces(food);
+    out.push({ ...base, lift: dropLift(ft - food.t) });
+    if (ft >= food.t + TILE_DELAY) out.push({ ...tile, lift: TILE_REST + dropLift(ft - food.t - TILE_DELAY) });
+  }
+  debris = debris.filter(d => d.mode === 'scatter' || ft - d.t0 < REMOVE_MS);
+  for (const d of debris) out.push(debrisPiece(d, ft));
+  return out;
+}
+
+function drawPanel(cy, title, lines) {
+  const w = CELL * 13, h = 50 + lines.length * 22;
+  const x = SIZE / 2 - w / 2, y = cy - h / 2;
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.beginPath(); ctx.roundRect(x + 4, y + 9, w, h, 6); ctx.fill();
+  ctx.fillStyle = '#0b0420';
+  ctx.beginPath(); ctx.roundRect(x, y + 5, w, h, 6); ctx.fill();
+  ctx.fillStyle = '#37136a';
+  ctx.beginPath(); ctx.roundRect(x, y, w, h, 6); ctx.fill();
+  ctx.strokeStyle = '#7a2fd0';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#b590ff';
+  ctx.font = '700 26px "Space Grotesk", "Arial Black", "Helvetica Neue", Arial, sans-serif';
+  ctx.fillText(title, SIZE / 2, y + 28);
+  ctx.fillStyle = '#fff8ff';
+  ctx.font = '400 14px "Lexend", "Helvetica Neue", Arial, sans-serif';
+  lines.forEach((l, i) => ctx.fillText(l, SIZE / 2, y + 58 + i * 22));
+  ctx.restore();
+}
+
+function render(f, ft) {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = '#0b0420';
+  ctx.fillRect(0, 0, SIZE, SIZE);
+
+  ctx.drawImage(plate, 0, 0, SIZE, SIZE);
+  const pieces = collect(ft);
+  pieces.sort((a, b) => (a.lift > 1) - (b.lift > 1) || (a.z ?? a.y) - (b.z ?? b.y));
+  for (const p of pieces) drawPiece(p, f);
+
+  ctx.fillStyle = vignette;
+  ctx.fillRect(0, 0, SIZE, SIZE);
+
+  if (state === 'ready') {
+    drawPanel(PAD + CELL * 15.5, 'BRICK SNAKE', ['Arrow keys or WASD to start']);
+  } else if (state === 'over') {
+    if (won) {
+      drawPanel(SIZE / 2, 'YOU WIN!', ['May your internet experience', 'be great for all eternity!', 'Space or Enter to rebuild']);
+    } else {
+      drawPanel(SIZE / 2, 'GAME OVER', [`Orb Score ${score}`, 'Space or Enter to rebuild']);
+    }
+  }
+}
+
+// ---------- input & loop ----------
+
+addEventListener('keydown', e => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key.toLowerCase() === 'm') {
+    muted = !muted;
+    return;
+  }
+  const want = KEYS[e.key.toLowerCase()];
+  const confirm = e.key === ' ' || e.key === 'Enter';
+  if (!want && !confirm) return;
+  e.preventDefault();
+  initAudio();
+
+  if (state === 'over') {
+    if (confirm) reset();
+    return;
+  }
+  if (state === 'ready') {
+    state = 'playing';
+    lastTick = performance.now();
+  }
+  if (state === 'playing' && want) {
+    const last = queue.length ? queue[queue.length - 1] : dir;
+    const reverses = want.x === -last.x && want.y === -last.y;
+    if (want !== last && !reverses && queue.length < 2) queue.push(want);
+  }
+});
+
+let lastFrame = -1;
+function loop(now) {
+  if (state === 'playing') {
+    if (now - lastTick > 500) lastTick = now - tickMs(); // tab was hidden; don't fast-forward
+    while (state === 'playing' && now - lastTick >= tickMs()) {
+      lastTick += tickMs();
+      step(lastTick);
+    }
+  }
+  if (state === 'dying' && now - deathT > DEATH_MS) state = 'over';
+
+  // only redraw on a new "exposure" so motion holds between frames like stop motion
+  const f = Math.floor(now / FRAME_MS);
+  if (f !== lastFrame) {
+    lastFrame = f;
+    render(f, f * FRAME_MS);
+  }
+  requestAnimationFrame(loop);
+}
+
+reset();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
